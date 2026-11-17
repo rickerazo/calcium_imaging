@@ -1,61 +1,95 @@
 # calcium-imaging
 
-Computer-vision pipeline that turns a raw calcium imaging movie into ΔF/F traces over time.
+A small Python pipeline that takes a raw calcium imaging movie, finds active cells with
+computer vision, and outputs each cell's ΔF/F (relative fluorescence change) over time.
 
-## Setup
+It is written from scratch on NumPy, SciPy, scikit-image and OpenCV, so every step is short
+enough to read and adjust. It does not depend on Suite2p or CaImAn.
+
+![ΔF/F traces of the 20 most active cells](docs/images/dff_traces.png)
+
+## What it does
+
+```
+raw movie (TIFF)
+   │  load, subtract dark offset
+   ▼
+motion correction      rigid, sub-pixel phase correlation
+   ▼
+cell detection         local-correlation image → band-pass → threshold → watershed
+   ▼
+trace extraction       mean fluorescence per cell, neuropil-corrected
+   ▼
+ΔF/F                   (F − F0) / F0, with F0 a running low percentile
+   ▼
+outputs/               dff.csv, dff.npz, four figures
+```
+
+On the bundled demo dataset (3000 frames, 170×170 px, 100 s) the full run takes about
+4 seconds and finds 31 cells.
+
+## Quick start
+
+Requires [uv](https://docs.astral.sh/uv/) (or any other way to make a Python ≥ 3.10
+virtual environment).
 
 ```bash
+# 1. Environment
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -e ".[dev]"
-```
 
-## Usage
+# 2. Demo data (347 MB, saved to data/raw/)
+.venv/bin/calcium-dff download
 
-```bash
-.venv/bin/calcium-dff download                                   # 347 MB into data/raw/
+# 3. Run
 .venv/bin/calcium-dff run data/raw/Sue_2x_3000_40_-46.tif --fps 30
-.venv/bin/python -m pytest                                       # synthetic-data tests
 ```
 
-Results land in `outputs/`:
+Results are written to `outputs/`:
 
 | File | Contents |
 |---|---|
-| `dff.csv` | `time_s` plus one ΔF/F column per ROI |
-| `dff.npz` | ΔF/F, F0, raw / neuropil / corrected fluorescence, ROI label mask, motion shifts, summary images |
-| `dff_traces.png` | ΔF/F vs time for the most active ROIs |
-| `dff_heatmap.png` | ΔF/F for every ROI |
-| `rois.png` | mean image, correlation image, ROI outlines |
-| `motion.png` | estimated x/y shift per frame |
+| `dff.csv` | `time_s` column plus one ΔF/F column per cell (`roi_1`, `roi_2`, …) |
+| `dff.npz` | ΔF/F, baselines, raw and neuropil traces, cell masks, motion shifts, summary images |
+| `dff_traces.png` | ΔF/F vs time for the 20 most active cells |
+| `dff_heatmap.png` | ΔF/F for every cell |
+| `rois.png` | Summary images with the detected cell outlines |
+| `motion.png` | Estimated x/y shift of every frame |
 
-## Dataset
+## Documentation
 
-`Sue_2x_3000_40_-46.tif`: two-photon GCaMP6f recording from mouse cortex, 3000 frames at
-~30 Hz, distributed with [CaImAn](https://github.com/flatironinstitute/CaImAn)
-(Giovannucci et al., eLife 2019). `data/` is not tracked by git.
+| Document | Read it for |
+|---|---|
+| [docs/usage.md](docs/usage.md) | Command-line reference, running on your own movie, tuning, Python API |
+| [docs/pipeline.md](docs/pipeline.md) | How each stage works, its parameters, and why it is done that way |
+| [docs/outputs.md](docs/outputs.md) | Exact format of every output file and how to load them |
+| [docs/development.md](docs/development.md) | Code layout, tests, and how to change or extend the pipeline |
 
-## Method
+## Demo dataset
 
-| Stage | Module | What it does |
-|---|---|---|
-| Load | `io.py` | TIFF stack to float32 `(T, Y, X)` |
-| Dark offset | `cli.py` | Subtract the pixel value of zero light (default: movie minimum; this dataset bottoms out at -296) |
-| Motion correction | `motion.py` | Rigid: sub-pixel phase correlation of each frame against a template, two passes |
-| Segmentation | `segment.py` | Local-correlation image, difference-of-Gaussians band-pass, robust threshold, watershed split, size and shape filter |
-| Traces | `traces.py` | Mean fluorescence per ROI; neuropil from a surrounding ring that excludes other ROIs; `F = F_roi - 0.7 * (F_neuropil - median(F_neuropil))` |
-| ΔF/F | `dff.py` | `F0` = running 8th percentile over 60 s of the 1 s-smoothed trace; `ΔF/F = (F - F0) / F0` |
+`Sue_2x_3000_40_-46.tif` is a two-photon recording of GCaMP6f-expressing neurons in mouse
+cortex: 3000 frames at about 30 Hz, 170×170 pixels. It is distributed with
+[CaImAn](https://github.com/flatironinstitute/CaImAn) (Giovannucci et al., *eLife* 2019) and
+downloaded from
+`https://caiman.flatironinstitute.org/~neuro/caiman_downloadables/Sue_2x_3000_40_-46.tif`.
 
-Main knobs (`calcium-dff run --help`): `--diameter` (cell size in pixels), `--threshold`
-(detection strictness), `--neuropil-coeff`, `--dark-offset`, `--baseline-window`, `--baseline-percentile`.
+The `data/` and `outputs/` folders are not tracked by git.
 
 ## Limitations
 
-- ΔF/F magnitudes depend on two conventions: the dark offset and the neuropil correction.
-  The default offset (movie minimum) is an estimate; pass `--dark-offset` if the true value is
-  known. Neuropil fluctuations are subtracted but its median level is kept, which gives
-  smaller ΔF/F than subtracting the full neuropil signal.
-- Motion correction is rigid only; no piecewise (non-rigid) correction.
-- ROIs are non-overlapping masks; signals from overlapping cells are not demixed.
-- Detection relies on activity, so cells that stay silent during the recording are missed.
-- The percentile baseline lags fast drift by about half a window; shorten `--baseline-window`
-  for recordings with strong bleaching.
+Read these before relying on the numbers.
+
+- **Absolute ΔF/F values depend on two conventions.** The dark offset (the pixel value that
+  means "no light") defaults to the movie minimum, which is an estimate. The neuropil
+  correction removes neuropil fluctuations but keeps its median level, which gives smaller
+  ΔF/F than subtracting the full neuropil signal. See
+  [docs/pipeline.md](docs/pipeline.md#2-dark-offset).
+- **Silent cells are missed.** Detection is based on activity, so a cell that never fires
+  during the recording is not found.
+- **Cells at the image border are discarded.**
+- **Overlapping cells are not demixed.** Each pixel belongs to at most one cell.
+- **Motion correction is rigid.** It handles whole-frame translation, not local warping or
+  movement in depth.
+- **Fast baseline drift is tracked with a lag** of about half the baseline window.
+- **Cell detection has only been checked by eye** on the demo dataset, and by automated
+  tests on synthetic movies. It has not been scored against hand-labelled ground truth.
