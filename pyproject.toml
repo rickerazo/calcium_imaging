@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "calcium-imaging"
+version = "0.1.0"
+description = "Computer-vision pipeline that turns raw calcium imaging movies into dF/F traces"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "scikit-image",
+    "opencv-python-headless",
+    "tifffile",
+    "matplotlib",
+    "pandas",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+calcium-dff = "calcium_imaging.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
